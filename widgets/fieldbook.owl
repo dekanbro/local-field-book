@@ -1,0 +1,182 @@
+app "fieldbook" {
+  // Offline chat over Lastbook and any text folder you add. Gemma runs on this phone.
+  meta { description: "Offline chat with Gemma over Lastbook and folders of notes you add"; version: "1.1"; license: "MIT"; category: "productivity"; owl: 19 }
+  fps: busy ? 8 : 1
+  title: view == "setup" ? "library" : view == "page" ? (reading.title ?? "page") : "fieldbook"
+  back: view == "setup" || view == "page"
+  onBack: view = "chat"
+  icon: """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+    <rect width="256" height="256" rx="56" fill="#1A1B26"/>
+    <path d="M46 78c26-18 50-18 78 2v112c-28-18-52-18-78 0z" fill="#C48A3A"/>
+    <path d="M210 78c-26-18-50-18-78 2v112c28-18 52-18 78 0z" fill="#F4E3A1"/>
+    <rect x="120" y="76" width="16" height="118" rx="3" fill="#8A5A22"/>
+    <path d="M78 108h28M78 132h22" stroke="#8A5A22" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="176" cy="124" r="22" fill="#7AA2F7"/>
+    <path d="M168 124h16M176 116v16" stroke="#1A1B26" stroke-width="6" stroke-linecap="round"/>
+  </svg>"""
+
+  state view = "chat"
+  state draft = ""
+  state opening = ""
+  source thread = file("~/.local/share/fieldbook/thread.json") json
+  source status = file("~/.local/share/fieldbook/status.json") json
+  source reading = file("~/.local/share/fieldbook/reading.json") json
+  source board = cmd("python3 ~/.config/omalauncher/widgets/fieldbook.py libs") every 10s json timeout 20s
+  source now = clock every 1s
+  let messages = thread ?? []
+  let busy = status.busy == true
+  let waitedSecs = status.since == null || now == null ? 0 : max(0, floor(now - status.since))
+  let waited = "${floor(waitedSecs / 60)}:${pad(floor(waitedSecs % 60), 2, "0")}"
+  let step = status.step != null && status.step != "" ? status.step : "thinking"
+
+  Column {
+    padding: [12, 8, 12, 8]
+    gap: 8
+    if view == "setup" {
+      Column {
+        scroll: true
+        weight: 1
+        gap: 12
+        Text { text: board == null ? "checking this phone…" : "${board.free} free"; style: muted }
+        if board.error != null && board.error != "" { Text { text: board.error; color: red; style: small } }
+
+        Text { text: "model"; style: label }
+        Text { text: board.model.name ?? "Gemma"; bold: true }
+        Text { text: board.model.blurb ?? ""; style: small }
+        Text { text: board.model.installed ? "on this phone" : (board.model.note ?? ""); style: muted }
+        if board.model.action == "download" {
+          Text { text: "download ${board.model.size}"; color: accent; onTap: run("python3 ~/.config/omalauncher/widgets/fieldbook.py fetch gemma-e2b") }
+        }
+
+        Text { text: "libraries"; style: label }
+        for lib in board.libraries ?? [] {
+          Column {
+            gap: 2
+            Text { text: lib.name; bold: true }
+            Text { text: lib.blurb; style: small }
+            Text { text: lib.installed ? "on this phone" : (lib.note != "" ? "${lib.size} · ${lib.note}" : lib.size); style: muted }
+            if lib.action == "download" {
+              Text { text: "download"; color: accent; onTap: run("python3 ~/.config/omalauncher/widgets/fieldbook.py fetch ${sh(lib.id)}") }
+            }
+          }
+        }
+
+        Text { text: "your folders"; style: label }
+        Text { text: "A folder of .txt or .md files becomes something Gemma can search."; style: small }
+        Input {
+          placeholder: "/sdcard/Documents/notes"
+          clear: true
+          onSubmit: run("python3 ~/.config/omalauncher/widgets/fieldbook.py add ${sh(trim(value))}")
+        }
+        for f in board.folders ?? [] {
+          Row {
+            gap: 8
+            Text { text: f.path; style: small; weight: 1 }
+            Text { text: "remove"; color: accent; style: small; onTap: run("python3 ~/.config/omalauncher/widgets/fieldbook.py remove ${sh(f.id)}") }
+          }
+        }
+
+        Text { text: "tools"; style: label }
+        Text { text: "Add a .py file in the tools folder. The next question picks it up."; style: small }
+        Text { text: "/sdcard/Documents/Lastbook/gemma/tools"; font: mono; style: small }
+        for t in board.tools ?? [] {
+          Column {
+            gap: 1
+            Text { text: t.name; bold: true }
+            Text { text: t.doc; style: small }
+          }
+        }
+      }
+    } else if view == "page" {
+      Column {
+        scroll: true
+        weight: 1
+        gap: 12
+        if reading.key != opening {
+          Text { text: "opening the page…"; style: muted }
+        } else {
+          if reading.page { Text { text: "page ${reading.page}"; style: muted } }
+          if reading.path != null && reading.path != "" {
+            Text { text: reading.kind == "pdf" ? "open pdf" : reading.kind == "html" ? "open page" : "open file"; color: accent; onTap: run("omalauncher share ${sh(reading.path)}") }
+          }
+          Text { text: reading.text ?? "" }
+          for pic in reading.images ?? [] {
+            Image { src: pic; fill: width; fit: contain; height: 220 }
+          }
+        }
+      }
+    } else {
+      Row {
+        align: center
+        Text { text: busy ? "${step} · ${waited}" : "on this phone, offline"; color: busy ? accent : muted; weight: 1 }
+        Text { text: "library"; color: accent; onTap: view = "setup" }
+      }
+      Input {
+        lines: 3
+        text: draft
+        placeholder: "ask the library…"
+        onChange: draft = value
+        onSubmit: {
+          if !busy && trim(value) != "" {
+            run("python3 ~/.config/omalauncher/widgets/fieldbook.py ask ${sh(trim(value))}")
+            draft = ""
+          }
+        }
+      }
+      Button {
+        text: busy ? "thinking…" : "send"
+        onTap: {
+          if !busy && trim(draft) != "" {
+            run("python3 ~/.config/omalauncher/widgets/fieldbook.py ask ${sh(trim(draft))}")
+            draft = ""
+          }
+        }
+      }
+      if status.error != null && status.error != "" { Text { text: status.error; color: red; style: small } }
+      if busy {
+        Row {
+          align: center
+          gap: 10
+          Canvas {
+            width: 46
+            height: 18
+            for i in range(3) {
+              let a = 0.22 + 0.78 * (sin(time * 2.8 - i * 0.9) * 0.5 + 0.5)
+              circle(8 + i * 15, 9, 3.4, fill: alpha(accent, a))
+            }
+          }
+          Text { text: step; color: accent; weight: 1 }
+          Text { text: waited; style: muted; font: mono }
+        }
+      }
+      Column {
+        scroll: true
+        weight: 1
+        gap: 12
+        if len(messages) == 0 {
+          Text { text: "Ask about water, food, repairs or the time. Answers stay on this phone."; style: muted }
+        }
+        for m in reverse(messages) {
+          Column {
+            gap: 2
+            Text { text: m.role == "user" ? "you  ${m.at}" : "fieldbook  ${m.at}"; style: muted }
+            if m.note != null && m.note != "" { Text { text: m.note; style: small; color: accent } }
+            Text { text: m.text ?? "" }
+            for s in m.sources ?? [] {
+              Text {
+                text: s.page ? "${s.title} · page ${s.page}" : (s.title ?? "")
+                color: accent
+                style: small
+                onTap: {
+                  opening = s.key
+                  run("python3 ~/.config/omalauncher/widgets/fieldbook.py read ${sh(s.key)}")
+                  view = "page"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
